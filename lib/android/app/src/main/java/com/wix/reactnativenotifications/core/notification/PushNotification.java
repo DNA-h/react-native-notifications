@@ -6,10 +6,18 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
+import android.media.AudioAttributes;
+import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 
+import androidx.core.app.NotificationCompat;
+
 import com.facebook.react.bridge.ReactContext;
+import com.wix.reactnativenotifications.R;
 import com.wix.reactnativenotifications.core.AppLaunchHelper;
 import com.wix.reactnativenotifications.core.AppLifecycleFacade;
 import com.wix.reactnativenotifications.core.AppLifecycleFacade.AppVisibilityListener;
@@ -21,15 +29,22 @@ import com.wix.reactnativenotifications.core.ProxyService;
 
 import static com.wix.reactnativenotifications.Defs.NOTIFICATION_OPENED_EVENT_NAME;
 import static com.wix.reactnativenotifications.Defs.NOTIFICATION_RECEIVED_EVENT_NAME;
-import static com.wix.reactnativenotifications.Defs.NOTIFICATION_RECEIVED_BACKGROUND_EVENT_NAME;
 
-public class PushNotification implements IPushNotification {
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.widget.RemoteViews;
+
+import java.io.IOException;
+import java.net.URL;
+
+public class PushNotification implements IPushNotification, AfterNotif {
 
     final protected Context mContext;
     final protected AppLifecycleFacade mAppLifecycleFacade;
     final protected AppLaunchHelper mAppLaunchHelper;
     final protected JsIOHelper mJsIOHelper;
     final protected PushNotificationProps mNotificationProps;
+    private int mNotificationId;
     final protected AppVisibilityListener mAppVisibilityListener = new AppVisibilityListener() {
         @Override
         public void onAppVisible() {
@@ -62,10 +77,8 @@ public class PushNotification implements IPushNotification {
     public void onReceived() throws InvalidNotificationException {
         if (!mAppLifecycleFacade.isAppVisible()) {
             postNotification(null);
-            notifyReceivedBackgroundToJS();
-        } else {
-            notifyReceivedToJS();
         }
+        notifyReceivedToJS();
     }
 
     @Override
@@ -74,8 +87,8 @@ public class PushNotification implements IPushNotification {
     }
 
     @Override
-    public int onPostRequest(Integer notificationId) {
-        return postNotification(notificationId);
+    public void onPostRequest(Integer notificationId) {
+        postNotification(notificationId);
     }
 
     @Override
@@ -83,10 +96,12 @@ public class PushNotification implements IPushNotification {
         return mNotificationProps.copy();
     }
 
-    protected int postNotification(Integer notificationId) {
-        final PendingIntent pendingIntent = getCTAPendingIntent();
-        final Notification notification = buildNotification(pendingIntent);
-        return postNotification(notification, notificationId);
+    protected void postNotification(Integer notificationId) {
+//        final PendingIntent pendingIntent = getCTAPendingIntent();
+        mNotificationId = notificationId;
+        new ShowNotif().execute();
+//        final Notification notification = buildNotification(pendingIntent);
+//        postNotification(notification, notificationId);
     }
 
     protected void digestNotification() {
@@ -194,6 +209,11 @@ public class PushNotification implements IPushNotification {
         return id;
     }
 
+    @Override
+    public void notifCreated(Notification notification) {
+        postNotification(notification, mNotificationId);
+    }
+
     protected void postNotification(int id, Notification notification) {
         final NotificationManager notificationManager = (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
         notificationManager.notify(id, notification);
@@ -205,10 +225,6 @@ public class PushNotification implements IPushNotification {
 
     private void notifyReceivedToJS() {
         mJsIOHelper.sendEventToJS(NOTIFICATION_RECEIVED_EVENT_NAME, mNotificationProps.asBundle(), mAppLifecycleFacade.getRunningReactContext());
-    }
-
-    private void notifyReceivedBackgroundToJS() {
-        mJsIOHelper.sendEventToJS(NOTIFICATION_RECEIVED_BACKGROUND_EVENT_NAME, mNotificationProps.asBundle(), mAppLifecycleFacade.getRunningReactContext());
     }
 
     private void notifyOpenedToJS() {
@@ -225,5 +241,79 @@ public class PushNotification implements IPushNotification {
 
     private int getAppResourceId(String resName, String resType) {
         return mContext.getResources().getIdentifier(resName, resType, mContext.getPackageName());
+    }
+
+    private class ShowNotif extends AsyncTask<String, String, String> {
+
+        protected String doInBackground(String... args) {
+            try {
+                showNotificationWithLayout();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            return null;
+        }
+
+        private void showNotificationWithLayout() throws IOException {
+            RemoteViews notificationLayout = new RemoteViews(mContext.getPackageName(), R.layout.notif_layout_small);
+
+            SpannableStringBuilder sbTitle = new SpannableStringBuilder(mNotificationProps.getTitle());
+            Typeface font = Typeface.createFromAsset(mContext.getAssets(), "fonts/Yekan.ttf");
+            sbTitle.setSpan(new CustomTypefaceSpan("", font), 0, sbTitle.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            notificationLayout.setTextViewText(R.id.notification_title, sbTitle);
+
+            SpannableStringBuilder sbMessage = new SpannableStringBuilder(mNotificationProps.getBody());
+            sbMessage.setSpan(new CustomTypefaceSpan("", font), 0, sbMessage.length(),
+                    Spanned.SPAN_EXCLUSIVE_INCLUSIVE);
+            notificationLayout.setTextViewText(R.id.notification_message, sbMessage);
+
+            PendingIntent notificationIntent = getCTAPendingIntent();
+//            notificationIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//            val stackBuilder = TaskStackBuilder.create(applicationContext)
+//            stackBuilder.addParentStack(MainList::class.java)
+//            stackBuilder.addNextIntent(notificationIntent)
+//            val notificationPendingIntent = PendingIntent.getActivity(applicationContext, 0, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel("channel_01",
+                        "channel_01",
+                        NotificationManager.IMPORTANCE_DEFAULT);
+                AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .build();
+                int soundResourceId = mContext.getResources().getIdentifier("eventually", "raw", mContext.getPackageName());
+                Uri uri = Uri.parse("android.resource://" + mContext.getPackageName() + "/" + soundResourceId);
+                channel.setSound(uri, audioAttributes);
+                final NotificationManager notificationManager = (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+                notificationManager.createNotificationChannel(channel);
+            }
+
+            NotificationCompat.Builder builder = new NotificationCompat.Builder(mContext, "channel_01")
+                    .setSmallIcon(mContext.getApplicationInfo().icon)
+                    .setStyle(new NotificationCompat.DecoratedCustomViewStyle())
+                    .setCustomContentView(notificationLayout)
+//                    .setColor(applicationContext.resources.getColor(R.color.karbamaPrimary))
+                    .setContentTitle(mNotificationProps.getTitle())
+                    .setContentIntent(notificationIntent);
+            builder.setChannelId("channel_01");
+            String img = mNotificationProps.getImage();
+            if (img != null) {
+                RemoteViews notificationLayoutExpanded = new RemoteViews(mContext.getPackageName(), R.layout.notif_layout_image);
+                notificationLayoutExpanded.setImageViewBitmap(R.id.imgAd, BitmapFactory.decodeStream(new URL(mNotificationProps.getImage()).openConnection().getInputStream()));
+                notificationLayoutExpanded.setTextViewText(R.id.notification_title, sbTitle);
+                notificationLayoutExpanded.setTextViewText(R.id.notification_message, sbMessage);
+                builder.setCustomBigContentView(notificationLayoutExpanded);
+                builder.setCustomContentView(notificationLayoutExpanded);
+            } else {
+                RemoteViews notificationLayoutExpanded = new RemoteViews(mContext.getPackageName(), R.layout.notif_layout);
+                notificationLayoutExpanded.setTextViewText(R.id.notification_title, sbTitle);
+                notificationLayoutExpanded.setTextViewText(R.id.notification_message, sbMessage);
+                builder.setCustomBigContentView(notificationLayoutExpanded);
+            }
+
+            PushNotification.this.notifCreated(builder.build());
+        }
     }
 }
